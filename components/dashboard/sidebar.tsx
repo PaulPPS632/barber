@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   CalendarDays,
   Users,
+  Users2,
   Scissors,
   MessageSquare,
   Settings,
@@ -32,6 +33,7 @@ const NAV = [
     group: "Barbería",
     items: [
       { href: "/dashboard/servicios", icon: Scissors,      label: "Servicios" },
+      { href: "/dashboard/staff",     icon: Users2,         label: "Staff" },
       { href: "/dashboard/chat",      icon: MessageSquare, label: "Chat IA" },
       { href: "/dashboard/micrositio",icon: Store,         label: "Micrositio" },
     ],
