@@ -4,7 +4,7 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import Link from "next/link";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, CheckCircle2, XCircle, AtSign, Scissors, User } from "lucide-react";
 import { AnimatedBackground } from "@/components/ui/animated-background";
 import { authClient } from "@/lib/auth-client";
 
@@ -16,6 +16,15 @@ interface Field {
   autoComplete?: string;
 }
 
+export interface SlugConfig {
+  /**
+   * Async validator — replace the placeholder in register/page.tsx
+   * with your real endpoint call.
+   * Must resolve { available: boolean }.
+   */
+  validateSlug: (slug: string) => Promise<{ available: boolean }>;
+}
+
 interface AuthFormProps {
   mode: "login" | "register";
   fields: Field[];
@@ -23,6 +32,10 @@ interface AuthFormProps {
   serverError?: string | null;
   /** Called after Google OAuth redirect is initiated */
   onGoogleSignIn?: () => void;
+  /** When provided, renders the barbería name + slug fields with live validation */
+  slugConfig?: SlugConfig;
+  /** When true (register mode), shows BARBERÍA / CLIENTE selector */
+  showRoleSelector?: boolean;
 }
 
 /**
@@ -32,13 +45,92 @@ interface AuthFormProps {
  * - Input focus: glow ring via GSAP
  * - Google One Tap auto-prompt + Google OAuth button
  */
-export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }: AuthFormProps) {
+type SlugStatus = "idle" | "checking" | "available" | "taken" | "error";
+
+export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn, slugConfig, showRoleSelector }: AuthFormProps) {
   const cardRef  = useRef<HTMLDivElement>(null);
   const formRef  = useRef<HTMLFormElement>(null);
-  const [loading, setLoading]       = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [loading, setLoading]             = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [showPwd, setShowPwd]       = useState(false);
-  const [values,  setValues]        = useState<Record<string, string>>({});
+  const [showPwd, setShowPwd]             = useState(false);
+  const [values,  setValues]              = useState<Record<string, string>>({});
+
+  // ── Role selector (register only) ───────────────────────────────────────────
+  type Role = "barberia" | "cliente";
+  const [role, setRole] = useState<Role>("barberia");
+  const isBarberiaRole  = showRoleSelector ? role === "barberia" : true;
+
+  // ── Slug state (register only) ───────────────────────────────────────────
+  const [barberiaName, setBarberiaName] = useState("");
+  const [slug,         setSlug]         = useState("");
+  const [slugStatus,   setSlugStatus]   = useState<SlugStatus>("idle");
+  const [slugEdited,   setSlugEdited]   = useState(false); // user manually edited the slug
+
+  const toSlug = (str: string) =>
+    str
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+  const validateSlug = useCallback(
+    (value: string) => {
+      if (!slugConfig || !value) { setSlugStatus("idle"); return; }
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      setSlugStatus("checking");
+      debounceRef.current = setTimeout(async () => {
+        try {
+          // ── Replace slugConfig.validateSlug with your endpoint ────────────
+          const result = await slugConfig.validateSlug(value);
+          setSlugStatus(result.available ? "available" : "taken");
+        } catch {
+          setSlugStatus("error");
+        }
+      }, 500);
+    },
+    [slugConfig],
+  );
+
+  const handleBarberiaNameChange = (value: string) => {
+    setBarberiaName(value);
+    if (!slugEdited) {
+      const generated = toSlug(value);
+      setSlug(generated);
+      validateSlug(generated);
+    }
+  };
+
+  const handleSlugChange = (value: string) => {
+    const clean = toSlug(value) || value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+    setSlug(clean);
+    setSlugEdited(true);
+    validateSlug(clean);
+  };
+
+  // ── Password validation (register only) ───────────────────────────────
+  const [showConfirm,    setShowConfirm]    = useState(false);
+  const [confirmPwd,     setConfirmPwd]     = useState("");
+  const [pwdTouched,     setPwdTouched]     = useState(false);
+  const [confirmTouched, setConfirmTouched] = useState(false);
+
+  const PWD_RULES = [
+    { id: "length",  label: "Mínimo 8 caracteres",      test: (p: string) => p.length >= 8 },
+    { id: "upper",   label: "Una letra mayúscula",       test: (p: string) => /[A-Z]/.test(p) },
+    { id: "number",  label: "Un número",                 test: (p: string) => /[0-9]/.test(p) },
+    { id: "special", label: "Un carácter especial (!@#$…)", test: (p: string) => /[^A-Za-z0-9]/.test(p) },
+  ] as const;
+
+  const pwdValue    = values["password"] ?? "";
+  const rulesOk     = PWD_RULES.map((r) => r.test(pwdValue));
+  const strength    = rulesOk.filter(Boolean).length; // 0-4
+  const pwdValid    = strength === 4;
+  const confirmOk   = confirmPwd === pwdValue && pwdValid;
+
+  const strengthColor = ["#ef4444", "#ef4444", "#f59e0b", "#f59e0b", "#10b981"][strength];
+  const strengthLabel = ["", "Muy débil", "Débil", "Regular", "Fuerte"][strength];
 
   // ── One Tap auto-prompt ──────────────────────────────────────────────────
   useEffect(() => {
@@ -91,8 +183,24 @@ export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isBarberiaRole && slugConfig && slug && slugStatus === "taken") return;
+    if (!isLogin) {
+      setPwdTouched(true);
+      setConfirmTouched(true);
+      if (!pwdValid || !confirmOk) return;
+    }
     setLoading(true);
-    try { await onSubmit(values); } finally { setLoading(false); }
+    try {
+      await onSubmit({
+        ...values,
+        ...(showRoleSelector ? { role } : {}),
+        ...(isBarberiaRole && slugConfig
+          ? { barberiaName, slug }
+          : { barberiaName: "", slug: "" }),
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleGoogle = async () => {
@@ -186,9 +294,123 @@ export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }
           </div>
 
           <form ref={formRef} onSubmit={handleSubmit} className="flex flex-col gap-5">
+            {/* ── Role selector (register only) ─────────────────────────── */}
+            {showRoleSelector && !isLogin && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-[#8A8F98] tracking-wide">
+                  ¿Cómo vas a usar Barber.pe?
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {([
+                    { value: "barberia", label: "Soy barbería",  Icon: Scissors, desc: "Gestiona citas y clientes" },
+                    { value: "cliente",  label: "Soy cliente",    Icon: User,     desc: "Reserva en tu barbería favorita" },
+                  ] as const).map(({ value, label, Icon, desc }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setRole(value)}
+                      className={`flex flex-col items-center gap-2 rounded-xl border px-3 py-3.5 text-center transition-all duration-150 ${
+                        role === value
+                          ? "border-[#5E6AD2]/60 bg-[#5E6AD2]/10 shadow-[0_0_0_1px_rgba(94,106,210,0.3)]"
+                          : "border-white/[0.08] bg-white/[0.03] hover:border-white/[0.15] hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <div
+                        className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+                          role === value ? "bg-[#5E6AD2]/20" : "bg-white/[0.06]"
+                        }`}
+                      >
+                        <Icon className={`h-4 w-4 transition-colors ${ role === value ? "text-[#5E6AD2]" : "text-[#8A8F98]"}`} />
+                      </div>
+                      <div>
+                        <p className={`text-xs font-semibold transition-colors ${ role === value ? "text-[#EDEDEF]" : "text-[#8A8F98]"}`}>{label}</p>
+                        <p className="text-[10px] text-[#8A8F98]/60 mt-0.5 leading-tight">{desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Barbería fields (only when role === barberia) ────────────── */}
+            {slugConfig && isBarberiaRole && (
+              <>
+                {/* Barbería name */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-[#8A8F98] tracking-wide">
+                    Nombre de tu barbería
+                  </label>
+                  <div
+                    data-input-wrap
+                    className="relative flex items-center overflow-hidden rounded-lg border transition-colors"
+                    style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" }}
+                  >
+                    <input
+                      type="text"
+                      placeholder="Ej: Barbería El Clásico"
+                      value={barberiaName}
+                      onChange={(e) => handleBarberiaNameChange(e.target.value)}
+                      onFocus={handleFocus as React.FocusEventHandler<HTMLInputElement>}
+                      onBlur={handleBlur as React.FocusEventHandler<HTMLInputElement>}
+                      required
+                      className="w-full bg-transparent px-4 py-3 text-sm text-[#EDEDEF] placeholder:text-[#8A8F98]/50 outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Slug */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-[#8A8F98] tracking-wide">
+                      URL de tu página
+                    </label>
+                    <span className="text-[11px] text-[#8A8F98]/50">barber.pe/<span className="text-[#8A8F98]">{slug || "tu-barberia"}</span></span>
+                  </div>
+                  <div
+                    data-input-wrap
+                    className={`relative flex items-center overflow-hidden rounded-lg border transition-colors ${
+                      slugStatus === "taken"     ? "border-red-500/40 !shadow-[0_0_0_2px_rgba(239,68,68,0.2)]" :
+                      slugStatus === "available" ? "border-emerald-500/40 !shadow-[0_0_0_2px_rgba(16,185,129,0.2)]" : ""
+                    }`}
+                    style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" }}
+                  >
+                    <span className="flex items-center pl-3.5 shrink-0 text-[#8A8F98]/50">
+                      <AtSign className="h-3.5 w-3.5" />
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="tu-barberia"
+                      value={slug}
+                      onChange={(e) => handleSlugChange(e.target.value)}
+                      onFocus={handleFocus as React.FocusEventHandler<HTMLInputElement>}
+                      onBlur={handleBlur as React.FocusEventHandler<HTMLInputElement>}
+                      required
+                      className="w-full bg-transparent px-3 py-3 text-sm text-[#EDEDEF] placeholder:text-[#8A8F98]/50 outline-none font-mono"
+                    />
+                    {/* Validation indicator */}
+                    <span className="mr-3 shrink-0">
+                      {slugStatus === "checking"  && <Loader2    className="h-4 w-4 animate-spin text-[#8A8F98]" />}
+                      {slugStatus === "available" && <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
+                      {slugStatus === "taken"     && <XCircle     className="h-4 w-4 text-red-400" />}
+                    </span>
+                  </div>
+                  {/* Status message */}
+                  {slugStatus === "taken" && (
+                    <p className="text-[11px] text-red-400 mt-0.5">Este slug ya está en uso. Elige otro.</p>
+                  )}
+                  {slugStatus === "available" && (
+                    <p className="text-[11px] text-emerald-400 mt-0.5">¡Disponible!</p>
+                  )}
+                  {slugStatus === "error" && (
+                    <p className="text-[11px] text-amber-400 mt-0.5">No se pudo verificar. Inténtalo de nuevo.</p>
+                  )}
+                </div>
+              </>
+            )}
+
             {fields.map((field) => {
               const isPassword = field.type === "password";
-              const inputType = isPassword && showPwd ? "text" : field.type;
+              const inputType  = isPassword && showPwd ? "text" : field.type;
 
               return (
                 <div key={field.id} className="flex flex-col gap-1.5">
@@ -201,10 +423,7 @@ export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }
                   <div
                     data-input-wrap
                     className="relative flex items-center overflow-hidden rounded-lg border transition-colors"
-                    style={{
-                      borderColor: "rgba(255,255,255,0.08)",
-                      background: "rgba(255,255,255,0.03)",
-                    }}
+                    style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" }}
                   >
                     <input
                       id={field.id}
@@ -212,7 +431,10 @@ export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }
                       placeholder={field.placeholder}
                       autoComplete={field.autoComplete}
                       value={values[field.id] ?? ""}
-                      onChange={(e) => handleChange(field.id, e.target.value)}
+                      onChange={(e) => {
+                        handleChange(field.id, e.target.value);
+                        if (isPassword) setPwdTouched(true);
+                      }}
                       onFocus={handleFocus}
                       onBlur={handleBlur}
                       required
@@ -225,17 +447,99 @@ export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }
                         className="mr-3 text-[#8A8F98] hover:text-[#EDEDEF] transition-colors"
                         aria-label="Toggle password visibility"
                       >
-                        {showPwd ? (
-                          <EyeOff className="h-4 w-4" />
-                        ) : (
-                          <Eye className="h-4 w-4" />
-                        )}
+                        {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                     )}
                   </div>
+
+                  {/* Password strength — register only */}
+                  {isPassword && !isLogin && pwdTouched && pwdValue.length > 0 && (
+                    <div className="mt-1 space-y-2">
+                      {/* Strength bar */}
+                      <div className="flex items-center gap-2">
+                        <div className="flex flex-1 gap-1">
+                          {[1, 2, 3, 4].map((i) => (
+                            <div
+                              key={i}
+                              className="h-1 flex-1 rounded-full transition-all duration-300"
+                              style={{
+                                background: i <= strength ? strengthColor : "rgba(255,255,255,0.08)",
+                              }}
+                            />
+                          ))}
+                        </div>
+                        <span className="text-[11px] font-medium" style={{ color: strength > 0 ? strengthColor : "transparent" }}>
+                          {strengthLabel}
+                        </span>
+                      </div>
+                      {/* Rules checklist */}
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                        {PWD_RULES.map((rule, idx) => (
+                          <div key={rule.id} className="flex items-center gap-1.5">
+                            {rulesOk[idx] ? (
+                              <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-400" />
+                            ) : (
+                              <XCircle className="h-3 w-3 shrink-0 text-[#8A8F98]/40" />
+                            )}
+                            <span className={`text-[11px] ${rulesOk[idx] ? "text-emerald-400" : "text-[#8A8F98]/60"}`}>
+                              {rule.label}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
+
+            {/* Confirm password — register only */}
+            {!isLogin && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-[#8A8F98] tracking-wide">
+                  Confirmar contraseña
+                </label>
+                <div
+                  data-input-wrap
+                  className={`relative flex items-center overflow-hidden rounded-lg border transition-colors ${
+                    confirmTouched && confirmPwd
+                      ? confirmOk
+                        ? "border-emerald-500/40"
+                        : "border-red-500/40"
+                      : ""
+                  }`}
+                  style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" }}
+                >
+                  <input
+                    type={showConfirm ? "text" : "password"}
+                    placeholder="Repite tu contraseña"
+                    autoComplete="new-password"
+                    value={confirmPwd}
+                    onChange={(e) => { setConfirmPwd(e.target.value); setConfirmTouched(true); }}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                    required
+                    className="w-full bg-transparent px-4 py-3 text-sm text-[#EDEDEF] placeholder:text-[#8A8F98]/50 outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm((s) => !s)}
+                    className="mr-3 text-[#8A8F98] hover:text-[#EDEDEF] transition-colors"
+                    aria-label="Toggle confirm password visibility"
+                  >
+                    {showConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                {confirmTouched && confirmPwd && !confirmOk && (
+                  <p className="text-[11px] text-red-400 mt-0.5">
+                    {!pwdValid ? "La contraseña no cumple los requisitos." : "Las contraseñas no coinciden."}
+                  </p>
+                )}
+                {confirmTouched && confirmOk && (
+                  <p className="text-[11px] text-emerald-400 mt-0.5">Las contraseñas coinciden ✓</p>
+                )}
+              </div>
+            )}
 
             {isLogin && (
               <div className="flex justify-end -mt-2">
@@ -256,7 +560,11 @@ export function AuthForm({ mode, fields, onSubmit, serverError, onGoogleSignIn }
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={
+                loading ||
+                (isBarberiaRole && slugConfig !== undefined && slugStatus === "taken") ||
+                (!isLogin && pwdTouched && (!pwdValid || (confirmTouched && !confirmOk)))
+              }
               className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-[#5E6AD2] py-3 text-sm font-medium text-white shadow-[0_0_20px_rgba(94,106,210,0.4)] transition-all duration-200 hover:bg-[#6872D9] hover:shadow-[0_0_32px_rgba(94,106,210,0.55)] active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none"
             >
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}

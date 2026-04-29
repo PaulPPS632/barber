@@ -12,8 +12,9 @@ import {
   Clock,
 } from "lucide-react";
 import { DashboardShell } from "@/components/dashboard/shell";
-import { authClient } from "@/lib/auth-client";
+import { authClient, useAppSession } from "@/lib/auth-client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 const STATS = [
   { label: "Citas hoy",        value: "8",   sub: "3 pendientes",  icon: CalendarDays,  color: "#5E6AD2" },
@@ -36,7 +37,8 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default function DashboardPage() {
-  const { data: session } = authClient.useSession();
+  const router = useRouter();
+  const { data: session } = useAppSession();
   const pageRef = useRef<HTMLDivElement>(null);
 
   useGSAP(
@@ -54,6 +56,11 @@ export default function DashboardPage() {
     },
     { scope: pageRef },
   );
+
+  if (session?.user.barberiaId === null) {
+    router.push("/dashboard/onboarding");
+    return null;
+  }
 
   const firstName = session?.user?.name?.split(" ")[0] ?? "Bienvenido";
 

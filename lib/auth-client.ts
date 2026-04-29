@@ -17,4 +17,25 @@ export const authClient = createAuthClient({
   ],
 });
 
-export const { useSession, signIn, signUp, signOut } = authClient;
+export const { signIn, signUp, signOut } = authClient;
+
+// ── Extended user type with custom backend fields ──────────────────────────
+export type AppUser = (typeof authClient.$Infer.Session)["user"] & {
+  barberiaId: string | null;
+  role: string;
+};
+
+export type AppSession = Omit<typeof authClient.$Infer.Session, "user"> & {
+  user: AppUser;
+};
+
+/**
+ * Typed wrapper over authClient.useSession() that includes
+ * the custom fields sent by your backend (barberiaId, role).
+ */
+export function useAppSession() {
+  const result = authClient.useSession();
+  return result as typeof result & {
+    data: (AppSession & { session: object }) | null;
+  };
+}
